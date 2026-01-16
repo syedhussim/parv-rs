@@ -1,0 +1,10 @@
+[package]
+name = "parv"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window", "Document", "DocumentFragment", "Element", "HtmlElement", "HtmlInputElement", "Node", "NodeList", "Event", "console"] }
