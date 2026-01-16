@@ -1,5 +1,5 @@
 [package]
-name = "parv-rs"
+name = "parv"
 version = "0.1.0"
 edition = "2024"
 
