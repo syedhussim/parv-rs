@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use serde::de::Error;
+use serde_json::Value;
+use web_sys::console;
 use web_sys::window;
 use web_sys::Element;
 use web_sys::HtmlInputElement;
@@ -9,6 +12,8 @@ pub trait TemplateExt {
     fn mount_on(&self, host : Element) -> Template<'_, (), ()>;
 
     fn mount_on_body(&self) -> Template<'_, (), ()>;
+
+    fn mount_on_id(&self, id : &str) -> Template<'_, (), ()>;
 }
 
 impl<A> TemplateExt for A where A : AsRef<str> {
@@ -24,6 +29,13 @@ impl<A> TemplateExt for A where A : AsRef<str> {
         
         Template { html : self.as_ref(), host : body, data : None, callback : None }
     }
+
+    fn mount_on_id(&self, id : &str) -> Template<'_, (), ()>{
+
+        let element = window().unwrap().document().unwrap().query_selector(&format!("#{}", id)).unwrap().unwrap();
+        
+        Template { html : self.as_ref(), host : element, data : None, callback : None }
+    }
 }
 
 pub struct Template<'a, D, F>{
@@ -31,6 +43,15 @@ pub struct Template<'a, D, F>{
     host : Element,
     data : Option<D>,
     callback : Option<F>
+}
+
+impl Template<'_, (), ()> {
+    pub fn from_id(id : &str) -> String {
+
+        let body = window().unwrap().document().unwrap().query_selector(&format!("#{}", id)).unwrap().unwrap();
+
+        body.inner_html()
+    }
 }
 
 impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
@@ -54,78 +75,137 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
         Template { html : self.html, host: self.host, data: Some(data), callback: self.callback }
     }
 
-    pub fn with_callback<F2>(self, callback : F2) -> Template<'a, D, F2> {
+    pub fn with_callback<F2>(self, callback : F2) -> Template<'a, D, F2>  where F2 : FnMut(Context) + 'static  {
 
         Template { html : self.html, host: self.host, data: self.data, callback: Some(callback) }
     }
 
-    fn inner_render<F2>(self, callback : Option<F2>) where F2 : FnMut(HashMap<String, Element>) {
+    fn inner_render<F2>(&self, mut callback : Option<&mut F2>) where F2 : FnMut(Context) {
 
         if let Some(window) = window() {
 
             if let Some(document) = window.document() {
 
-                let bind_map = match self.data.as_ref() {
+                let value = match self.data.as_ref() {
                     Some(data) => serde_json::to_value(data).expect("Serialization failed"),
                     None => serde_json::Value::Object(serde_json::Map::new()),
                 };
 
-                let mut ui : HashMap<String, Element> = HashMap::new();
+                let data_array = match value {
+                    Value::Array(arr) => Value::Array(arr),
+                    Value::Object(obj) => Value::Array(vec![Value::Object(obj)]),
+                    _ => { todo!() }
+                };
 
-                let container = document.create_element("div").unwrap();
-                container.set_inner_html(self.html);
+                if let Value::Array(items) = data_array {
+                    
+                    for data in items {
 
-                let node_list = container.query_selector_all("*").unwrap();
+                        let mut ui : HashMap<String, Element> = HashMap::new();
 
-                for index in 0..node_list.length() {
-                    let node = node_list.item(index).unwrap();
+                        let container = document.create_element("div").unwrap();
+                        container.set_inner_html(self.html);
 
-                    let element : Element = node.dyn_into().unwrap();
+                        let node_list = container.query_selector_all("*").unwrap();
 
-                    if let Some(name) = element.get_attribute("pv-html") {
-                        
-                        if let Some(v) = bind_map.get(&name){
-                            element.set_inner_html(v.as_str().unwrap());
-                        }
+                        for index in 0..node_list.length() {
 
-                        element.remove_attribute("pv-html").unwrap();
-                    }
+                            let node = node_list.item(index).unwrap();
 
-                    if let Some(name) = element.get_attribute("pv-value") {
-                        
-                        if let Some(v) = bind_map.get(&name){
-                            let input = element.dyn_ref::<HtmlInputElement>().unwrap();
-                            input.set_value(v.as_str().unwrap());
-                        }
+                            let element : Element = node.dyn_into().unwrap();
 
-                        element.remove_attribute("pv-value").unwrap();
-                    }
-
-                    if let Some(name) = element.get_attribute("pv-visible") {
-                        
-                        if let Some(value) = bind_map.get(&name){
-
-                            if let Some(boolean) = value.as_bool() {
-                                if boolean == false {
-                                    element.remove();
+                            if let Some(name) = element.get_attribute("pv-text") {
+                                
+                                if let Some(v) = data.get(&name){
+                                    element.set_text_content(Some(v.as_str().unwrap()));
                                 }
+
+                                element.remove_attribute("pv-text").unwrap();
                             }
-                            element.remove_attribute("pv-visible").unwrap();
+
+                            if let Some(name) = element.get_attribute("pv-value") {
+                                
+                                if let Some(v) = data.get(&name){
+                                    let input = element.dyn_ref::<HtmlInputElement>().unwrap();
+                                    input.set_value(v.as_str().unwrap());
+                                }
+
+                                element.remove_attribute("pv-value").unwrap();
+                            }
+
+                            if let Some(statement) = element.get_attribute("pv-if") {
+
+                                match Parser::compile(statement){
+
+                                    Ok(conditional_block) => {
+
+                                        if let Some(value) = data.get(&conditional_block.identifier){
+
+                                            if let Some(boolean) = value.as_bool() {
+
+                                                if boolean == conditional_block.condition {
+
+                                                    for property in conditional_block.block_true {
+                                                        self.execute_property(&property, &element, &data);
+                                                    }
+                                                }else { 
+                                                    if let Some(block_false) = conditional_block.block_false {
+                                                        for property in block_false {
+                                                            self.execute_property(&property, &element, &data);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        console::error_1(&JsValue::from(&e));
+                                    }   
+                                }
+
+                                element.remove_attribute("pv-if").unwrap();
+                            }
+
+                            if let Some(tag) = element.get_attribute("pv-tag") {
+                                element.remove_attribute("pv-tag").unwrap();
+                                ui.insert(tag, element);
+                            }
                         }
-                    }
 
-                    if let Some(tag) = element.get_attribute("pv-tag") {
-                        element.remove_attribute("pv-tag").unwrap();
-                        ui.insert(tag, element);
+                        if let Some(callback) = callback.as_mut() {
+                            callback(Context { ui, data : Some(data) } );
+                        }
+                        
+                        self.host.append_child(&container).unwrap();
+
                     }
                 }
-
-                if let Some(mut callback) = callback {
-                    callback(ui);
-                }
-                
-                self.host.append_child(&container).unwrap();
             }
+        }
+    }
+
+    fn execute_property(&self, property : &Property, element : &Element, data : &serde_json::Value){
+
+        if property.name.eq_ignore_ascii_case("visible") {
+            if property.value.trim().eq_ignore_ascii_case("false") {
+                element.remove();
+            }
+        }
+
+        if property.name.eq_ignore_ascii_case("css") {
+            element.set_class_name(&property.value);
+        }
+
+        if property.name.eq_ignore_ascii_case("text") {
+            element.set_text_content(Some(&property.value));
+        }
+
+        if property.name.eq_ignore_ascii_case("template") {
+
+            Template::from_id(&property.value)
+                .mount_on(element.clone())
+                .with_data(data)
+                .render();
         }
     }
 }
@@ -134,16 +214,270 @@ impl<'a, D> Template<'a, D, ()> where D : serde::Serialize {
 
     pub fn render(self) {
 
-        self.inner_render::<fn(HashMap<String, Element>)>(None);
+        self.inner_render::<fn(Context)>(None);
     }
 }
 
-impl<'a, D, F> Template<'a, D, F> where D : serde::Serialize, F : FnMut(HashMap<String, Element>){
+impl<'a, D, F> Template<'a, D, F> where D : serde::Serialize, F : FnMut(Context) + 'static {
 
-    pub fn render(mut self) {
-        let callback = self.callback.take();
+    pub fn render(&mut self) {
+        let mut callback = self.callback.take(); 
+        self.inner_render(callback.as_mut());
+        self.callback = callback;
+    }
+}
 
-        self.inner_render(callback);
+pub struct Context{
+    ui : HashMap<String, Element>,
+    data : Option<serde_json::Value>
+}
+
+impl Context {
+
+    pub fn ui(&self) -> &HashMap<String, Element> {
+        &self.ui
+    }
+
+    pub fn data<T>(&mut self) -> Result<T, serde_json::error::Error> where
+        T: serde::de::DeserializeOwned {
+
+        match self.data.take() {
+            Some(value) => serde_json::from_value(value),
+            None => Err(serde_json::error::Error::custom("Context data already taken")),
+        }
+    }
+}
+
+struct Parser;
+
+impl Parser {
+
+    fn compile(s : String) -> Result<ConditionalBlock, String> {
+
+        let delimiters = vec![' ', ':', ';', '{', '}', '|'];
+
+        let mut token = String::new();
+
+        let mut tokens : Vec<String>  = Vec::new();
+
+        for ch in s.chars() {
+            if delimiters.contains(&ch){
+
+                if token.len() > 0 {
+                    tokens.push(token.clone());
+                }
+                
+                tokens.push(ch.to_string());
+                token.clear();
+                continue;
+            }
+
+            token.push(ch);
+        }
+
+        let token_stream = TokenStream::new(tokens);
+
+        Compile::new(token_stream).compile()
+    }
+}
+
+#[derive(Debug)]
+struct TokenStream {
+    tokens : Vec<String>,
+    position : usize
+}
+
+impl TokenStream {
+
+    fn new(tokens : Vec<String>) -> Self {
+        Self {
+            tokens,
+            position: 0
+        }
+    }
+
+    fn peek(&self) -> Option<&String> {
+
+        self.tokens.get(self.position)
+    }
+
+    fn next(&mut self) -> Option<&String> {
+
+        let token = self.tokens.get(self.position);
+
+        if token.is_some(){
+            self.position += 1;
+        }
+
+        token
+    }
+
+    fn skip_whitespaces(&mut self) {
+
+        while let Some(token) = self.peek() {
+            if token.trim().is_empty() {
+                self.position += 1;
+            }else{
+                break;
+            }
+        }
+    }
+}
+struct Compile {
+    token_stream : TokenStream
+}
+
+impl Compile {
+
+    fn new(token_stream : TokenStream) -> Self {
+        Self  {
+            token_stream
+        }
+    }
+
+    fn compile(&mut self) -> Result<ConditionalBlock, String> {
+
+        let mut conditional_block = ConditionalBlock::default();
+
+        let identifier = self.parse_identifier()?;
+
+        self.expect_token(":")?;
+
+        let condition = self.parse_condition()?;
+
+        let block_true = self.parse_block()?;
+
+        self.token_stream.skip_whitespaces();
+
+        let block_false =  {
+            if let Some(_) = self.token_stream.peek(){
+
+                self.expect_token("|")?;
+
+                if let Ok(v) = self.parse_block(){
+                    Some(v)
+                }else{
+                    None
+                }
+            }else{
+                None
+            }
+        };
+
+        conditional_block.identifier = identifier;
+        conditional_block.condition = condition;
+        conditional_block.block_true = block_true;
+        conditional_block.block_false = block_false;
+
+        Ok(conditional_block)
+    }
+
+    fn parse_identifier(&mut self) -> Result<String, String>{
+
+        self.token_stream.skip_whitespaces();
+
+        let field = self.token_stream.next().ok_or("Error".to_string())?;
+
+        Ok(field.to_string())
+    }
+
+    fn parse_condition(&mut self) -> Result<bool, String>{
+
+        self.token_stream.skip_whitespaces();
+
+        let condition = self.token_stream.next().ok_or("Error".to_string())?;
+
+        if condition.to_lowercase() == "true"{
+            return Ok(true);
+        }else if condition.to_lowercase() == "false" {
+            return Ok(false);
+        }else{
+            Err("not a bool".to_string())
+        }
+    }
+
+    fn parse_block(&mut self) -> Result<Vec<Property>, String> {
+
+        self.token_stream.skip_whitespaces();
+
+        self.expect_token("{")?;
+
+        let mut properties : Vec<Property> = Vec::new();
+
+        self.parse_property(&mut properties)?;
+
+        self.expect_token("}")?;
+
+        Ok(properties)
+    }
+
+    fn parse_property(&mut self, properties : &mut Vec<Property>) -> Result<(), String>{
+
+        let property = self.parse_identifier()?;
+
+        self.expect_token(":")?;
+
+        let value = self.parse_value()?;
+
+        self.token_stream.skip_whitespaces();
+
+        properties.push(Property::new(property.trim().to_string(), value.trim().to_string()));
+
+        if let Some(peek) = self.token_stream.peek(){
+            if peek == ";" {
+                self.token_stream.next().unwrap();
+                self.parse_property(properties)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_value(&mut self) -> Result<String, String>{
+
+        self.token_stream.skip_whitespaces();
+
+        let field = self.token_stream.next().ok_or("Error".to_string())?;
+
+        Ok(field.to_string())
+    }
+
+    fn expect_token(&mut self, identifier : &str) -> Result<(), String>{
+
+        self.token_stream.skip_whitespaces();
+
+        if let Some(ident) = self.token_stream.next() {
+            if ident == identifier {
+                return Ok(());
+            }else{
+                return Err(format!("Expected ident {identifier} found {ident}").to_string());
+            }
+        }
+
+        Err(format!("Expected ident {identifier}").to_string())
+    }
+}
+
+#[derive(Default, Debug)]
+struct ConditionalBlock {
+    identifier: String,
+    condition: bool,
+    block_true: Vec<Property>,
+    block_false: Option<Vec<Property>>,
+}
+
+#[derive(Debug)]
+struct Property {
+    name : String,
+    value : String
+}
+
+impl Property {
+    
+    fn new(name : String, value : String) -> Self {
+        Self {
+            name, value
+        }
     }
 }
 
