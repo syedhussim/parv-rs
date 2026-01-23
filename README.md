@@ -172,28 +172,6 @@ This clears the mount point completely.
 
 Parv supports **one-way data binding** using serializable data.
 
-```rust
-template.with_data(user);
-```
-
-Where `user` implements `Serialize` and `Deserialize`.
-
-You can retrieve the bound data at any time in a callback:
-
-```rust
-template.with_callback(|ctx: Context| {
-
-    let user_result: Result<User, serde_json::Error> = ctx.data();
-
-    match user_result {
-        Ok(user_ref) => console_log!("Username: {}", user_ref.username),
-        Err(err) => console_error!("Failed to deserialize data: {}", err),
-    }
-});
-```
-
----
-
 ### Example: Binding a `User` Struct
 
 ```rust
@@ -230,6 +208,15 @@ Result:
 * Updates flow **one-way: Rust → DOM**
 * Data can be retrieved in callbacks using `Context::data()`.
 
+You can retrieve the bound data at any time in the callback:
+
+```rust
+template.with_callback(|ctx: Context| {
+
+    let user_result: Result<User, serde_json::Error> = ctx.data();
+});
+```
+
 Rules:
 
 * Field names must match `pv-text` values
@@ -250,7 +237,6 @@ Instead, it emphasizes:
 * Direct DOM access
 * Explicit lifecycles
 * Wasm-native performance
-* Simple, debuggable behavior
 
 ---
 
