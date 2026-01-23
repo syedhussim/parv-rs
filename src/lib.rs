@@ -1,10 +1,14 @@
 use std::collections::HashMap;
+use serde::Serialize;
 use serde::de::Error;
 use serde_json::Value;
+use web_sys::Document;
 use web_sys::console;
 use web_sys::window;
 use web_sys::Element;
 use web_sys::HtmlInputElement;
+use web_sys::HtmlTextAreaElement;
+use web_sys::HtmlOptionElement;
 use wasm_bindgen::prelude::*;
 
 pub trait TemplateExt {
@@ -70,7 +74,7 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
         }
     }
 
-    pub fn with_data<D2>(self, data : D2) -> Template<'a, D2, F>{
+    pub fn with_data<D2>(self, data : D2) -> Template<'a, D2, F> where D2 : Serialize {
 
         Template { html : self.html, host: self.host, data: Some(data), callback: self.callback }
     }
@@ -106,6 +110,8 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                         let container = document.create_element("div").unwrap();
                         container.set_inner_html(self.html);
 
+                        let container = container.first_child().unwrap().dyn_into::<Element>().unwrap();
+
                         let node_list = container.query_selector_all("*").unwrap();
 
                         for index in 0..node_list.length() {
@@ -114,23 +120,28 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
 
                             let element : Element = node.dyn_into().unwrap();
 
-                            if let Some(name) = element.get_attribute("pv-text") {
-                                
-                                if let Some(v) = data.get(&name){
-                                    element.set_text_content(Some(v.as_str().unwrap()));
-                                }
+                            let arrtibutes = element.get_attribute_names();
 
-                                element.remove_attribute("pv-text").unwrap();
+                            if let Some(x) = element.get_attribute("value"){
+                                console::log_1(&JsValue::from(x));
                             }
 
-                            if let Some(name) = element.get_attribute("pv-value") {
-                                
-                                if let Some(v) = data.get(&name){
-                                    let input = element.dyn_ref::<HtmlInputElement>().unwrap();
-                                    input.set_value(v.as_str().unwrap());
-                                }
+                            for attribute in arrtibutes {
 
-                                element.remove_attribute("pv-value").unwrap();
+                                if let Some(name) = attribute.as_string() {
+
+                                    if name.starts_with("pv-") && name != "pv-if" && name!="pv-tag" {
+
+                                        if let Some(value) = element.get_attribute(&name) {
+
+                                            let property = Property::new(name.to_string(), value);
+
+                                            if let Err(e) = self.execute_attribute(&element, &property, &data){
+                                                console::error_1(&e);
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             if let Some(statement) = element.get_attribute("pv-if") {
@@ -146,12 +157,12 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                                                 if boolean == conditional_block.condition {
 
                                                     for property in conditional_block.block_true {
-                                                        self.execute_property(&property, &element, &data);
+                                                        self.execute_property(&element, &property, &data);
                                                     }
                                                 }else { 
                                                     if let Some(block_false) = conditional_block.block_false {
                                                         for property in block_false {
-                                                            self.execute_property(&property, &element, &data);
+                                                            self.execute_property(&element, &property, &data);
                                                         }
                                                     }
                                                 }
@@ -172,41 +183,114 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                             }
                         }
 
-                        if let Some(callback) = callback.as_mut() {
-                            callback(Context { ui, data : Some(data) } );
-                        }
-                        
+
                         self.host.append_child(&container).unwrap();
 
+                        if let Some(callback) = callback.as_mut() {
+                            callback(Context { ui, data : Some(data), document : document.clone() } );
+                        }
                     }
                 }
             }
         }
     }
 
-    fn execute_property(&self, property : &Property, element : &Element, data : &serde_json::Value){
+    fn execute_attribute(&self, element : &Element, property : &Property, data : &Value) -> Result<(), JsValue> {
 
-        if property.name.eq_ignore_ascii_case("visible") {
-            if property.value.trim().eq_ignore_ascii_case("false") {
+        if property.is("pv-visible") {
+
+            let (field, condition) = match property.value.split_once(":"){
+                Some((field, condition)) => {
+                    
+                    if condition.trim().to_lowercase() == "" || condition.trim().to_lowercase() == "true" {
+                        (&field.to_string(), true)
+                    }else{
+                        (&field.to_string(), false)
+                    }
+                },
+                None => { (&property.value, true) }
+
+            };
+
+            let data_value = data.get(field)
+                .cloned() 
+                .ok_or_else(|| JsValue::from_str(&format!("Key '{}' not found", field)))?;
+
+            if let Some(field_value) = data_value.as_bool() {
+
+                if field_value != condition {
+                    element.remove();
+                }
+            }
+        }else{
+
+            let data_value = data.get(&property.value)
+                .cloned() 
+                .ok_or_else(|| JsValue::from_str(&format!("Key '{}' not found", property.value)))?;
+
+            if property.is("pv-text") {
+
+                if let Some(text) = data_value.as_str(){
+                    element.set_text_content(Some(text));
+                }
+            }
+
+            if property.is("pv-value") {
+
+                if let Some(text) = data_value.as_str(){
+
+                    if let Some(input) = element.dyn_ref::<HtmlInputElement>(){
+                        input.set_value(text);
+                    }
+                    else if let Some(input) = element.dyn_ref::<HtmlOptionElement>(){
+                        input.set_value(text);
+                    }
+                    else if let Some(input) = element.dyn_ref::<HtmlTextAreaElement>(){
+                        input.set_value(text);
+                    }
+                }
+            }
+
+            if property.is("pv-checked") {
+
+                if let Some(bool) = data_value.as_bool(){
+
+                    if let Some(input) = element.dyn_ref::<HtmlInputElement>(){ 
+                        match input.type_().as_str() {
+                            "radio" | "checkbox" => { 
+                                if bool { console::log_1(&JsValue::from(bool));
+                                    input.set_checked(true);
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        
+        element.remove_attribute(&property.name)?;
+
+        Ok(())
+    }
+
+    fn execute_property(&self, element : &Element, property : &Property, data : &Value) -> Result<(), JsValue> {
+
+        if property.is("visible"){
+            if property.value.trim().to_lowercase() == "false" {
                 element.remove();
             }
         }
 
-        if property.name.eq_ignore_ascii_case("css") {
+        if property.is("css"){
             element.set_class_name(&property.value);
         }
 
-        if property.name.eq_ignore_ascii_case("text") {
+        if property.is("text"){
             element.set_text_content(Some(&property.value));
         }
 
-        if property.name.eq_ignore_ascii_case("template") {
-
-            Template::from_id(&property.value)
-                .mount_on(element.clone())
-                .with_data(data)
-                .render();
-        }
+        Ok(())
     }
 }
 
@@ -227,9 +311,29 @@ impl<'a, D, F> Template<'a, D, F> where D : serde::Serialize, F : FnMut(Context)
     }
 }
 
+#[derive(Debug)]
+struct Property {
+    name : String,
+    value : String
+}
+
+impl Property {
+    
+    fn new(name : String, value : String) -> Self {
+        Self {
+            name, value
+        }
+    }
+
+    fn is(&self, name : &str) -> bool {
+        self.name.eq_ignore_ascii_case(name)
+    }
+}
+
 pub struct Context{
     ui : HashMap<String, Element>,
-    data : Option<serde_json::Value>
+    data : Option<serde_json::Value>,
+    document : Document
 }
 
 impl Context {
@@ -246,6 +350,10 @@ impl Context {
             None => Err(serde_json::error::Error::custom("Context data already taken")),
         }
     }
+
+    pub fn document(&self) -> Document{
+        self.document.clone()
+    }   
 }
 
 struct Parser;
@@ -464,21 +572,6 @@ struct ConditionalBlock {
     condition: bool,
     block_true: Vec<Property>,
     block_false: Option<Vec<Property>>,
-}
-
-#[derive(Debug)]
-struct Property {
-    name : String,
-    value : String
-}
-
-impl Property {
-    
-    fn new(name : String, value : String) -> Self {
-        Self {
-            name, value
-        }
-    }
 }
 
 #[macro_export]
