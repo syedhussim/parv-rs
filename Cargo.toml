@@ -7,20 +7,21 @@ edition = "2024"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 wasm-bindgen = "0.2"
-web-sys = { 
-    version = "0.3", 
-    features = [
-        "Window",
-        "Document",
-        "DocumentFragment",
-        "Element",
-        "HtmlElement",
-        "HtmlInputElement",
-        "HtmlTextAreaElement",
-        "HtmlOptionElement",
-        "Node",
-        "NodeList",
-        "Event",
-        "console"
-    ]
-}
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Window",
+    "Document",
+    "DocumentFragment",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlTextAreaElement",
+    "HtmlOptionElement",
+    "Node",
+    "NodeList",
+    "Event",
+    "EventTarget",
+    "console",
+]

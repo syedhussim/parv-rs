@@ -8,7 +8,8 @@ use web_sys::window;
 use web_sys::Element;
 use web_sys::HtmlInputElement;
 use web_sys::HtmlTextAreaElement;
-use web_sys::HtmlOptionElement;
+use web_sys::Event;
+use web_sys::EventTarget;
 use wasm_bindgen::prelude::*;
 
 pub trait TemplateExt {
@@ -23,28 +24,37 @@ pub trait TemplateExt {
 impl<A> TemplateExt for A where A : AsRef<str> {
 
     fn mount_on(&self, host : Element) -> Template<'_, (), ()> {
-        
-        Template { html : self.as_ref(), host, data : None, callback : None }
+        Template { html : self.as_ref(), host : Some(host), data : None, callback : None }
     }
 
     fn mount_on_body(&self) -> Template<'_, (), ()>{
 
         let body = window().unwrap().document().unwrap().body().unwrap().dyn_into::<Element>().unwrap();
         
-        Template { html : self.as_ref(), host : body, data : None, callback : None }
+        Template { html : self.as_ref(), host : Some(body), data : None, callback : None }
     }
 
     fn mount_on_id(&self, id : &str) -> Template<'_, (), ()>{
 
-        let element = window().unwrap().document().unwrap().query_selector(&format!("#{}", id)).unwrap().unwrap();
-        
-        Template { html : self.as_ref(), host : element, data : None, callback : None }
+        if let Some(window) = window(){
+            if let Some(document) = window.document() {
+                if let Ok(option) = document.query_selector(&format!("#{}", id)) {
+                    if let Some(element) = option {
+                        return Template { html : self.as_ref(), host : Some(element), data : None, callback : None }
+                    }else{
+                        console::error_1(&format!("Host '{}' not found", id).into());
+                    }
+                }
+            }
+        }
+
+        Template { html : self.as_ref(), host : None, data : None, callback : None }
     }
 }
 
 pub struct Template<'a, D, F>{
     html : &'a str,
-    host : Element,
+    host : Option<Element>,
     data : Option<D>,
     callback : Option<F>
 }
@@ -52,9 +62,19 @@ pub struct Template<'a, D, F>{
 impl Template<'_, (), ()> {
     pub fn from_id(id : &str) -> String {
 
-        let body = window().unwrap().document().unwrap().query_selector(&format!("#{}", id)).unwrap().unwrap();
+        if let Some(window) = window(){
+            if let Some(document) = window.document() {
+                if let Ok(option) = document.query_selector(&format!("#{}", id)) {
+                    if let Some(element) = option {
+                        return element.inner_html()
+                    }else{
+                        console::error_1(&format!("Template '{}' not found", id).into());
+                    }
+                }
+            }
+        }
 
-        body.inner_html()
+        "".to_string()
     }
 }
 
@@ -62,15 +82,24 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
 
     pub fn clear(self) -> Template<'a, (), ()> {
 
-        while let Some(child) = self.host.first_child() {
-            self.host.remove_child(&child).unwrap();
-        }
+        if let Some(host) = &self.host {
+            while let Some(child) = host.first_child() {
+                host.remove_child(&child).unwrap();
+            }
 
-        Template {
-            html: self.html,
-            host: self.host,
-            data: None,
-            callback: None,
+            Template {
+                html: self.html,
+                host: self.host,
+                data: None,
+                callback: None,
+            }
+        }else{
+            Template {
+                html: self.html,
+                host: None,
+                data: None,
+                callback: None,
+            }
         }
     }
 
@@ -98,7 +127,7 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                 let data_array = match value {
                     Value::Array(arr) => Value::Array(arr),
                     Value::Object(obj) => Value::Array(vec![Value::Object(obj)]),
-                    _ => { todo!() }
+                    _ => { Value::Array([].to_vec()) }
                 };
 
                 if let Value::Array(items) = data_array {
@@ -107,91 +136,99 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
 
                         let mut ui : HashMap<String, Element> = HashMap::new();
 
-                        let container = document.create_element("div").unwrap();
-                        container.set_inner_html(self.html);
+                        if let Ok(container) = document.create_element("div") {
 
-                        let container = container.first_child().unwrap().dyn_into::<Element>().unwrap();
+                            container.set_inner_html(self.html);
 
-                        let node_list = container.query_selector_all("*").unwrap();
+                            if let Some(container) = container.first_element_child(){
 
-                        for index in 0..node_list.length() {
+                                let node_list = container.query_selector_all("*").unwrap();
 
-                            let node = node_list.item(index).unwrap();
+                                for index in 0..node_list.length() {
 
-                            let element : Element = node.dyn_into().unwrap();
+                                    let node = node_list.item(index).unwrap();
 
-                            let arrtibutes = element.get_attribute_names();
+                                    let element : Element = node.dyn_into().unwrap();
 
-                            if let Some(x) = element.get_attribute("value"){
-                                console::log_1(&JsValue::from(x));
-                            }
+                                    self.process_element(element, &mut ui, &data);
+                                }
 
-                            for attribute in arrtibutes {
+                                if let Some(host) = &self.host {
+                                    host.append_child(&container).unwrap();
 
-                                if let Some(name) = attribute.as_string() {
+                                    self.process_element(container, &mut ui, &data);
 
-                                    if name.starts_with("pv-") && name != "pv-if" && name!="pv-tag" {
-
-                                        if let Some(value) = element.get_attribute(&name) {
-
-                                            let property = Property::new(name.to_string(), value);
-
-                                            if let Err(e) = self.execute_attribute(&element, &property, &data){
-                                                console::error_1(&e);
-                                            }
-                                        }
+                                    if let Some(callback) = callback.as_mut() {
+                                        callback(Context { ui, data : Some(data), document : document.clone() } );
                                     }
                                 }
+
                             }
-
-                            if let Some(statement) = element.get_attribute("pv-if") {
-
-                                match Parser::compile(statement){
-
-                                    Ok(conditional_block) => {
-
-                                        if let Some(value) = data.get(&conditional_block.identifier){
-
-                                            if let Some(boolean) = value.as_bool() {
-
-                                                if boolean == conditional_block.condition {
-
-                                                    for property in conditional_block.block_true {
-                                                        self.execute_property(&element, &property, &data);
-                                                    }
-                                                }else { 
-                                                    if let Some(block_false) = conditional_block.block_false {
-                                                        for property in block_false {
-                                                            self.execute_property(&element, &property, &data);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    },
-                                    Err(e) => {
-                                        console::error_1(&JsValue::from(&e));
-                                    }   
-                                }
-
-                                element.remove_attribute("pv-if").unwrap();
-                            }
-
-                            if let Some(tag) = element.get_attribute("pv-tag") {
-                                element.remove_attribute("pv-tag").unwrap();
-                                ui.insert(tag, element);
-                            }
-                        }
-
-
-                        self.host.append_child(&container).unwrap();
-
-                        if let Some(callback) = callback.as_mut() {
-                            callback(Context { ui, data : Some(data), document : document.clone() } );
                         }
                     }
                 }
             }
+        }
+    }
+
+    fn process_element(&self, element : Element, ui : &mut HashMap<String, Element>, data : &Value){
+
+        let arrtibutes = element.get_attribute_names();
+
+        for attribute in arrtibutes {
+
+            if let Some(name) = attribute.as_string() {
+
+                if name.starts_with("pv-") && name != "pv-if" && name!="pv-tag" {
+
+                    if let Some(value) = element.get_attribute(&name) {
+
+                        let property = Property::new(name.to_string(), value);
+
+                        if let Err(e) = self.execute_attribute(&element, &property, &data){
+                            console::error_1(&e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(statement) = element.get_attribute("pv-if") {
+
+            match Parser::compile(statement){
+
+                Ok(conditional_block) => {
+
+                    if let Some(value) = data.get(&conditional_block.identifier){
+
+                        if let Some(boolean) = value.as_bool() {
+
+                            if boolean == conditional_block.condition {
+
+                                for property in conditional_block.block_true {
+                                    //self.execute_property(&element, &property, &data);
+                                }
+                            }else { 
+                                if let Some(block_false) = conditional_block.block_false {
+                                    for property in block_false {
+                                        //self.execute_property(&element, &property, &data);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    console::error_1(&JsValue::from(&e));
+                }   
+            }
+
+            element.remove_attribute("pv-if").unwrap();
+        }
+
+        if let Some(tag) = element.get_attribute("pv-tag") {
+            element.remove_attribute("pv-tag").unwrap();
+            ui.insert(tag, element);
         }
     }
 
@@ -240,9 +277,6 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                 if let Some(text) = data_value.as_str(){
 
                     if let Some(input) = element.dyn_ref::<HtmlInputElement>(){
-                        input.set_value(text);
-                    }
-                    else if let Some(input) = element.dyn_ref::<HtmlOptionElement>(){
                         input.set_value(text);
                     }
                     else if let Some(input) = element.dyn_ref::<HtmlTextAreaElement>(){
@@ -297,7 +331,6 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
 impl<'a, D> Template<'a, D, ()> where D : serde::Serialize {
 
     pub fn render(self) {
-
         self.inner_render::<fn(Context)>(None);
     }
 }
@@ -310,6 +343,34 @@ impl<'a, D, F> Template<'a, D, F> where D : serde::Serialize, F : FnMut(Context)
         self.callback = callback;
     }
 }
+
+pub trait Handler {
+    fn on_click<F>(&self, callback: F)
+    where
+        F: 'static + FnMut(Event);
+}
+
+impl Handler for Element {
+    fn on_click<F>(&self, callback: F)
+    where
+        F: 'static + FnMut(Event),
+    {
+        // Cast Element -> EventTarget
+        let target: &EventTarget = self.dyn_ref().unwrap();
+
+        // Wrap callback in Closure
+        let closure = Closure::wrap(Box::new(callback) as Box<dyn FnMut(_)>);
+
+        // Add the event listener
+        target
+            .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref())
+            .unwrap();
+
+        // Forget closure to keep it alive for the lifetime of the page
+        closure.forget();
+    }
+}
+
 
 #[derive(Debug)]
 struct Property {
@@ -589,7 +650,7 @@ macro_rules! ui {
                 Some(el) => el.clone(),
                 None => {
                     web_sys::console::error_1(
-                        &format!("Missing field in map: {}", stringify!($field)).into()
+                        &format!("Missing field: {}", stringify!($field)).into()
                     );
                     return;
                 }
