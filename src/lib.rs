@@ -142,7 +142,20 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
 
                             if let Some(container) = container.first_element_child(){
 
-                                let node_list = container.query_selector_all("*").unwrap();
+                                let mut node_list = container.query_selector_all("*").unwrap();
+
+                                for index in 0..node_list.length() {
+                                    let node = node_list.item(index).unwrap();
+                                        
+                                    let element : Element = node.dyn_into().unwrap();
+
+                                    if let Some(include) = element.get_attribute("pv-include") {
+                                        let template = Template::from_id(&include);
+                                        element.set_inner_html(&template);
+                                    }
+                                }
+                                
+                                node_list = container.query_selector_all("*").unwrap();
 
                                 for index in 0..node_list.length() {
                                     let node = node_list.item(index).unwrap();
@@ -150,7 +163,6 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                                     let element : Element = node.dyn_into().unwrap();
 
                                     if let Some(tag) = element.get_attribute("pv-tag") {
-                                        element.remove_attribute("pv-tag").unwrap();
                                         ui.insert(tag, element.clone());
                                     }
                                 }
@@ -253,14 +265,6 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                     target_element_clone.set_attribute("hidden", "true").expect_throw("Cannot set attribute hidden");
                 }
             });
-        }
-
-        if property.is("pv-include"){ 
-
-            Template::from_id(&property.value)
-                .mount_on(element.clone())
-                .with_data(data)
-                .render();
         }
 
         if property.contains(vec!["pv-text", "pv-css", "pv-value", "pv-checked"]){
