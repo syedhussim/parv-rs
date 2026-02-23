@@ -120,7 +120,7 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
             if let Some(document) = window.document() {
 
                 let value = match self.data.as_ref() {
-                    Some(data) => serde_json::to_value(data).expect("Serialization failed"),
+                    Some(data) => serde_json::to_value(data).expect_throw("Data serialization failed"),
                     None => serde_json::Value::Object(serde_json::Map::new()),
                 };
 
@@ -145,6 +145,17 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                                 let node_list = container.query_selector_all("*").unwrap();
 
                                 for index in 0..node_list.length() {
+                                    let node = node_list.item(index).unwrap();
+                                        
+                                    let element : Element = node.dyn_into().unwrap();
+
+                                    if let Some(tag) = element.get_attribute("pv-tag") {
+                                        element.remove_attribute("pv-tag").unwrap();
+                                        ui.insert(tag, element.clone());
+                                    }
+                                }
+
+                                for index in 0..node_list.length() {
 
                                     let node = node_list.item(index).unwrap();
 
@@ -154,6 +165,7 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                                 }
 
                                 if let Some(host) = &self.host {
+
                                     host.append_child(&container).unwrap();
 
                                     self.process_element(container, &mut ui, &data);
@@ -162,7 +174,6 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                                         callback(Context { ui, data : Some(data), document : document.clone() } );
                                     }
                                 }
-
                             }
                         }
                     }
@@ -179,62 +190,24 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
 
             if let Some(name) = attribute.as_string() {
 
-                if name.starts_with("pv-") && name != "pv-if" && name!="pv-tag" {
+                if name.starts_with("pv-"){
 
                     if let Some(value) = element.get_attribute(&name) {
 
                         let property = Property::new(name.to_string(), value);
 
-                        if let Err(e) = self.execute_attribute(&element, &property, &data){
+                        if let Err(e) = self.execute_attribute(&element, &property, ui, &data){
                             console::error_1(&e);
                         }
                     }
                 }
             }
         }
-
-        if let Some(statement) = element.get_attribute("pv-if") {
-
-            match Parser::compile(statement){
-
-                Ok(conditional_block) => {
-
-                    if let Some(value) = data.get(&conditional_block.identifier){
-
-                        if let Some(boolean) = value.as_bool() {
-
-                            if boolean == conditional_block.condition {
-
-                                for property in conditional_block.block_true {
-                                    //self.execute_property(&element, &property, &data);
-                                }
-                            }else { 
-                                if let Some(block_false) = conditional_block.block_false {
-                                    for property in block_false {
-                                        //self.execute_property(&element, &property, &data);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                Err(e) => {
-                    console::error_1(&JsValue::from(&e));
-                }   
-            }
-
-            element.remove_attribute("pv-if").unwrap();
-        }
-
-        if let Some(tag) = element.get_attribute("pv-tag") {
-            element.remove_attribute("pv-tag").unwrap();
-            ui.insert(tag, element);
-        }
     }
 
-    fn execute_attribute(&self, element : &Element, property : &Property, data : &Value) -> Result<(), JsValue> {
+    fn execute_attribute(&self, element : &Element, property : &Property, ui : &mut HashMap<String, Element>, data : &Value) -> Result<(), JsValue> {
 
-        if property.is("pv-visible") {
+        if property.contains(vec!["pv-visible", "pv-show"]){
 
             let (field, condition) = match property.value.split_once(":"){
                 Some((field, condition)) => {
@@ -246,29 +219,67 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                     }
                 },
                 None => { (&property.value, true) }
-
             };
 
             let data_value = data.get(field)
                 .cloned() 
-                .ok_or_else(|| JsValue::from_str(&format!("Key '{}' not found", field)))?;
+                .ok_or_else(|| JsValue::from_str(&format!("Data field '{}' not found", field)))?;
 
             if let Some(field_value) = data_value.as_bool() {
 
                 if field_value != condition {
-                    element.remove();
+
+                    if property.name == "pv-visible" {
+                        element.remove();
+                    }
+
+                    if property.name == "pv-show" {
+                        element.set_attribute("hidden", "true").expect_throw("Cannot set attribute hidden");
+                    }
                 }
             }
-        }else{
+        }
+
+        if property.is("pv-toggle"){ 
+
+            let target_element = ui.get(&property.value).expect_throw("Not found");
+                
+            let target_element_clone = target_element.clone();
+
+            element.on_click( move |_| {
+                if target_element_clone.has_attribute("hidden") {
+                    target_element_clone.remove_attribute("hidden").expect_throw("Cannot remove attribute hidden");
+                }else{
+                    target_element_clone.set_attribute("hidden", "true").expect_throw("Cannot set attribute hidden");
+                }
+            });
+        }
+
+        if property.is("pv-include"){ 
+
+            Template::from_id(&property.value)
+                .mount_on(element.clone())
+                .with_data(data)
+                .render();
+        }
+
+        if property.contains(vec!["pv-text", "pv-css", "pv-value", "pv-checked"]){
 
             let data_value = data.get(&property.value)
                 .cloned() 
-                .ok_or_else(|| JsValue::from_str(&format!("Key '{}' not found", property.value)))?;
+                .ok_or_else(|| JsValue::from_str(&format!("Data field '{}' not found", property.value)))?;
 
             if property.is("pv-text") {
 
                 if let Some(text) = data_value.as_str(){
                     element.set_text_content(Some(text));
+                }
+            }
+
+            if property.is("pv-css") {
+
+                if let Some(cls) = data_value.as_str(){
+                    element.set_class_name(cls);
                 }
             }
 
@@ -301,28 +312,10 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                     }
                 }
             }
+
         }
-        
+
         element.remove_attribute(&property.name)?;
-
-        Ok(())
-    }
-
-    fn execute_property(&self, element : &Element, property : &Property, data : &Value) -> Result<(), JsValue> {
-
-        if property.is("visible"){
-            if property.value.trim().to_lowercase() == "false" {
-                element.remove();
-            }
-        }
-
-        if property.is("css"){
-            element.set_class_name(&property.value);
-        }
-
-        if property.is("text"){
-            element.set_text_content(Some(&property.value));
-        }
 
         Ok(())
     }
@@ -344,33 +337,33 @@ impl<'a, D, F> Template<'a, D, F> where D : serde::Serialize, F : FnMut(Context)
     }
 }
 
-pub trait Handler {
-    fn on_click<F>(&self, callback: F)
-    where
-        F: 'static + FnMut(Event);
+pub trait ElementExt {
+
+    fn on_event<F>(&self, event_name : &str, callback: F) where F: 'static + FnMut(Event);
+
+    fn on_click<F>(&self, callback: F) where F: 'static + FnMut(Event);
 }
 
-impl Handler for Element {
-    fn on_click<F>(&self, callback: F)
-    where
-        F: 'static + FnMut(Event),
-    {
-        // Cast Element -> EventTarget
+impl ElementExt for Element {
+
+    fn on_event<F>(&self, event_name : &str, callback: F) where F: 'static + FnMut(Event){
+
         let target: &EventTarget = self.dyn_ref().unwrap();
 
-        // Wrap callback in Closure
         let closure = Closure::wrap(Box::new(callback) as Box<dyn FnMut(_)>);
 
-        // Add the event listener
         target
-            .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref())
+            .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())
             .unwrap();
 
-        // Forget closure to keep it alive for the lifetime of the page
         closure.forget();
     }
-}
 
+    fn on_click<F>(&self, callback: F) where F: 'static + FnMut(Event){
+
+        self.on_event("click", callback);
+    }
+}
 
 #[derive(Debug)]
 struct Property {
@@ -388,6 +381,10 @@ impl Property {
 
     fn is(&self, name : &str) -> bool {
         self.name.eq_ignore_ascii_case(name)
+    }
+    
+    fn contains(&self, properties : Vec<&str>) -> bool{
+        properties.contains(&self.name.as_str())
     }
 }
 
@@ -415,224 +412,6 @@ impl Context {
     pub fn document(&self) -> Document{
         self.document.clone()
     }   
-}
-
-struct Parser;
-
-impl Parser {
-
-    fn compile(s : String) -> Result<ConditionalBlock, String> {
-
-        let delimiters = vec![' ', ':', ';', '{', '}', '|'];
-
-        let mut token = String::new();
-
-        let mut tokens : Vec<String>  = Vec::new();
-
-        for ch in s.chars() {
-            if delimiters.contains(&ch){
-
-                if token.len() > 0 {
-                    tokens.push(token.clone());
-                }
-                
-                tokens.push(ch.to_string());
-                token.clear();
-                continue;
-            }
-
-            token.push(ch);
-        }
-
-        let token_stream = TokenStream::new(tokens);
-
-        Compile::new(token_stream).compile()
-    }
-}
-
-#[derive(Debug)]
-struct TokenStream {
-    tokens : Vec<String>,
-    position : usize
-}
-
-impl TokenStream {
-
-    fn new(tokens : Vec<String>) -> Self {
-        Self {
-            tokens,
-            position: 0
-        }
-    }
-
-    fn peek(&self) -> Option<&String> {
-
-        self.tokens.get(self.position)
-    }
-
-    fn next(&mut self) -> Option<&String> {
-
-        let token = self.tokens.get(self.position);
-
-        if token.is_some(){
-            self.position += 1;
-        }
-
-        token
-    }
-
-    fn skip_whitespaces(&mut self) {
-
-        while let Some(token) = self.peek() {
-            if token.trim().is_empty() {
-                self.position += 1;
-            }else{
-                break;
-            }
-        }
-    }
-}
-struct Compile {
-    token_stream : TokenStream
-}
-
-impl Compile {
-
-    fn new(token_stream : TokenStream) -> Self {
-        Self  {
-            token_stream
-        }
-    }
-
-    fn compile(&mut self) -> Result<ConditionalBlock, String> {
-
-        let mut conditional_block = ConditionalBlock::default();
-
-        let identifier = self.parse_identifier()?;
-
-        self.expect_token(":")?;
-
-        let condition = self.parse_condition()?;
-
-        let block_true = self.parse_block()?;
-
-        self.token_stream.skip_whitespaces();
-
-        let block_false =  {
-            if let Some(_) = self.token_stream.peek(){
-
-                self.expect_token("|")?;
-
-                if let Ok(v) = self.parse_block(){
-                    Some(v)
-                }else{
-                    None
-                }
-            }else{
-                None
-            }
-        };
-
-        conditional_block.identifier = identifier;
-        conditional_block.condition = condition;
-        conditional_block.block_true = block_true;
-        conditional_block.block_false = block_false;
-
-        Ok(conditional_block)
-    }
-
-    fn parse_identifier(&mut self) -> Result<String, String>{
-
-        self.token_stream.skip_whitespaces();
-
-        let field = self.token_stream.next().ok_or("Error".to_string())?;
-
-        Ok(field.to_string())
-    }
-
-    fn parse_condition(&mut self) -> Result<bool, String>{
-
-        self.token_stream.skip_whitespaces();
-
-        let condition = self.token_stream.next().ok_or("Error".to_string())?;
-
-        if condition.to_lowercase() == "true"{
-            return Ok(true);
-        }else if condition.to_lowercase() == "false" {
-            return Ok(false);
-        }else{
-            Err("not a bool".to_string())
-        }
-    }
-
-    fn parse_block(&mut self) -> Result<Vec<Property>, String> {
-
-        self.token_stream.skip_whitespaces();
-
-        self.expect_token("{")?;
-
-        let mut properties : Vec<Property> = Vec::new();
-
-        self.parse_property(&mut properties)?;
-
-        self.expect_token("}")?;
-
-        Ok(properties)
-    }
-
-    fn parse_property(&mut self, properties : &mut Vec<Property>) -> Result<(), String>{
-
-        let property = self.parse_identifier()?;
-
-        self.expect_token(":")?;
-
-        let value = self.parse_value()?;
-
-        self.token_stream.skip_whitespaces();
-
-        properties.push(Property::new(property.trim().to_string(), value.trim().to_string()));
-
-        if let Some(peek) = self.token_stream.peek(){
-            if peek == ";" {
-                self.token_stream.next().unwrap();
-                self.parse_property(properties)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn parse_value(&mut self) -> Result<String, String>{
-
-        self.token_stream.skip_whitespaces();
-
-        let field = self.token_stream.next().ok_or("Error".to_string())?;
-
-        Ok(field.to_string())
-    }
-
-    fn expect_token(&mut self, identifier : &str) -> Result<(), String>{
-
-        self.token_stream.skip_whitespaces();
-
-        if let Some(ident) = self.token_stream.next() {
-            if ident == identifier {
-                return Ok(());
-            }else{
-                return Err(format!("Expected ident {identifier} found {ident}").to_string());
-            }
-        }
-
-        Err(format!("Expected ident {identifier}").to_string())
-    }
-}
-
-#[derive(Default, Debug)]
-struct ConditionalBlock {
-    identifier: String,
-    condition: bool,
-    block_true: Vec<Property>,
-    block_false: Option<Vec<Property>>,
 }
 
 #[macro_export]
