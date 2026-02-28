@@ -8,6 +8,7 @@ use web_sys::window;
 use web_sys::Element;
 use web_sys::HtmlInputElement;
 use web_sys::HtmlTextAreaElement;
+use web_sys::HtmlImageElement;
 use web_sys::Event;
 use web_sys::EventTarget;
 use wasm_bindgen::prelude::*;
@@ -252,22 +253,129 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
             }
         }
 
-        if property.is("pv-toggle"){ 
+        if property.contains(vec!["pv-toggle", "pv-toggle-class", "pv-switch"]){
 
-            let target_element = ui.get(&property.value).expect_throw("Not found");
-                
-            let target_element_clone = target_element.clone();
+            if property.is("pv-toggle"){ 
 
-            element.on_click( move |_| {
-                if target_element_clone.has_attribute("hidden") {
-                    target_element_clone.remove_attribute("hidden").expect_throw("Cannot remove attribute hidden");
-                }else{
-                    target_element_clone.set_attribute("hidden", "true").expect_throw("Cannot set attribute hidden");
+                let target_element = ui.get(&property.value).expect_throw("Not found");
+                    
+                let target_element_clone = target_element.clone();
+
+                element.on_click( move |_| {
+                    if target_element_clone.has_attribute("hidden") {
+                        target_element_clone.remove_attribute("hidden").expect_throw("Cannot remove attribute hidden");
+                    }else{
+                        target_element_clone.set_attribute("hidden", "true").expect_throw("Cannot set attribute hidden");
+                    }
+                });
+            }
+
+            if property.is("pv-toggle-class"){ 
+
+                if let Some((target_element_name, class_name)) = &property.value.split_once(":"){
+                    let target_element = ui.get(&target_element_name.to_string()).expect_throw("Not found");
+                        
+                    let target_element_clone = target_element.clone();
+                    let class_name_clone = class_name.to_string();
+
+                    element.on_click( move |_| {
+                        if target_element_clone.class_list().contains(&class_name_clone) {
+                            target_element_clone.class_list().remove_1(&class_name_clone).expect_throw("Cannot remove css class");
+                        }else{
+                            target_element_clone.class_list().add_1(&class_name_clone).expect_throw("Cannot add css class");
+                        }
+                    });
                 }
-            });
+            }
+
+            if property.is("pv-switch"){ 
+
+                if let Some((on, off)) = property.value.split_once(":") {
+
+                    let mut on_elements : Vec<Element> = Vec::new();
+                    let mut off_elements : Vec<Element> = Vec::new();
+
+                    for target_element_name in on.split(","){
+                        let target_element = ui.get(target_element_name).expect_throw("Switch target element not found");
+                        on_elements.push(target_element.clone());
+                    }
+
+                    for target_element_name in off.split(","){
+                        let target_element = ui.get(target_element_name).expect_throw("Switch target element not found");
+                        off_elements.push(target_element.clone());
+                    }
+
+                    element.on_click(move |_| {
+
+                        for element in on_elements.iter() {
+                            element.remove_attribute("hidden").expect_throw("Cannot remove attribute hidden");
+                        }
+
+                        for element in off_elements.iter() {
+                            element.set_attribute("hidden", "true").expect_throw("Cannot set attribute hidden");
+                        }
+                    });
+                }
+            }
         }
 
-        if property.contains(vec!["pv-text", "pv-css", "pv-value", "pv-checked"]){
+        if property.contains(vec!["pv-foreach"]){
+
+            let (field, child, condition) = match property.value.split_once(":"){
+                Some((field, condition)) => {
+
+                    let (parent_field, child_field) = match field.split_once("."){
+                        Some((parent_field, child_field)) => {
+                            (parent_field, Some(child_field))
+                        },
+                        None => {
+                            (field, None)
+                        }
+                    };
+                    
+                    let condition_value = if condition.trim().to_lowercase() == "" || condition.trim().to_lowercase() == "true" {
+                        true
+                    }else{
+                        false
+                    };
+
+                    (parent_field, child_field, condition_value)
+                },
+                None => { (property.value.as_str(), None, true) }
+            };
+                
+            let data_value = data.get(field)
+                .cloned() 
+                .ok_or_else(|| JsValue::from_str(&format!("Data field '{}' not found", field)))?;
+
+            let template_name = element.get_attribute("pv-template").unwrap();
+
+            if let Some(array) = data_value.as_array() {
+
+                for item in array {
+
+                    if let Some(field) = child {
+                        let value = item.get(field).unwrap();
+
+                        if let Some(bool) = value.as_bool() {
+                            if condition == bool {
+                                Template::from_id(&template_name)
+                                    .mount_on(element.clone())
+                                    .with_data(item)
+                                    .render();
+                            }
+                        }
+                    }else{
+                        Template::from_id(&template_name)
+                            .mount_on(element.clone())
+                            .with_data(item)
+                            .render();
+                    }
+                }
+            }
+        }
+
+        if property.contains(vec!["pv-text", "pv-css", "pv-value", "pv-checked", "pv-src"]){
 
             let data_value = data.get(&property.value)
                 .cloned() 
@@ -317,6 +425,13 @@ impl<'a, D, F> Template<'a, D, F> where D :  serde::Serialize {
                 }
             }
 
+            if property.is("pv-src") {
+                if let Some(value) = data_value.as_str(){
+                    if let Some(img) = element.dyn_ref::<HtmlImageElement>(){
+                        img.set_src(value);
+                    }  
+                }
+            }
         }
 
         element.remove_attribute(&property.name)?;
